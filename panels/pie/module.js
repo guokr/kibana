@@ -154,10 +154,12 @@ angular.module('kibana.pie', [])
                 .facetFilter(ejs.QueryFilter(
                   ejs.FilteredQuery(
                     ejs.TermQuery($scope.panel.query.field || '*', v.term),
-                    ejs.RangeFilter($scope.time.field)
-                      .from($scope.time.from)
-                      .to($scope.time.to)
-                    )))).size(0)
+                    ejs.AndFilter([
+                      ejs.QueryFilter(
+                        ejs.QueryStringQuery($scope.panel.query.query || '*')),
+                      ejs.RangeFilter($scope.time.field)
+                        .from($scope.time.from)
+                        .to($scope.time.to)]))))).size(0)
             var ret = sub_request.doSearch();
             ret.then(function(ret) {
               var count = ret.facets.pie.total;
