@@ -11,9 +11,12 @@
   ### Parameters
   * query :: An object with 3 possible parameters depends on the mode:
   ** field: Fields to run a terms facet on. Only does anything in terms mode
+  ** value: Value field calulate total in statistical facet. Only does anything in terms
+  mode with value field.
   ** query: A string of the query to run
   ** goal: How many to shoot for, only does anything in goal mode
   * exclude :: In terms mode, ignore these terms
+  * rest :: Show the rest in the pie
   * donut :: Drill a big hole in the pie
   * tilt :: A janky 3D representation of the pie. Looks terrible 90% of the time.
   * legend :: Show the legend?
@@ -40,6 +43,7 @@ angular.module('kibana.pie', [])
     query   : { field:"_all", query:"*", goal: 1},
     size    : 10,
     exclude : [],
+    rest    : false,
     donut   : false,
     tilt    : false,
     legend  : true,
@@ -99,6 +103,19 @@ angular.module('kibana.pie', [])
     $scope.panel.loading = true;
     var request = $scope.ejs.Request().indices($scope.index);
 
+    var statisticalRequest = function () {
+      return request
+        .facet(ejs.StatisticalFacet('pie')
+          .field($scope.panel.query.value)
+          .facetFilter(ejs.QueryFilter(
+            ejs.FilteredQuery(
+              ejs.QueryStringQuery($scope.panel.query.query || '*'),
+              ejs.RangeFilter($scope.time.field)
+                .from($scope.time.from)
+                .to($scope.time.to)
+              )))).size(0)
+    }
+
     var pushData = function(slice) {
         $scope.data.push();
         if(!(_.isUndefined($scope.panel.colors))
@@ -132,39 +149,60 @@ angular.module('kibana.pie', [])
       results.then(function(results) {
         $scope.panel.loading = false;
         $scope.data = [];
-        // same as terms
+        // terms facet
         if (_.isUndefined($scope.panel.query.value)
             || $scope.panel.query.value === "") {
-          $scope.hits = results.hits.total;
+          $scope.hits = results.facets.pie.total;
           var k = 0;
+          var sum = 0;
           _.each(results.facets.pie.terms, function(v) {
             var slice = { label : v.term, data : v.count };
-            pushData(slice)
-            k = k + 1;
+            pushData(slice);
+            sum += v.count;
+            k += 1;
           });
+          if ($scope.panel.rest && results.facets.pie.total > sum) {
+              var rest = { label: "The rest", data : results.facets.pie.total - sum};
+              pushData(rest);
+          }
           $scope.$emit('render');
         // statistical facet
         } else {
           $scope.hits = 0;
           var k = 0;
+          var sum = 0;
+          if ($scope.panel.rest) {
+            request =  statisticalRequest();
+            var sum_ret = request.doSearch();
+            sum_ret.then(function(sum_ret) {
+              $scope.hits = sum_ret.facets.pie.total;
+            });
+          }
           _.each(results.facets.pie.terms, function(v) {
-            sub_request =  request
+            request =  request
               .facet(ejs.StatisticalFacet('pie')
                 .field($scope.panel.query.value)
                 .facetFilter(ejs.QueryFilter(
                   ejs.FilteredQuery(
                     ejs.TermQuery($scope.panel.query.field || '*', v.term),
-                    ejs.RangeFilter($scope.time.field)
-                      .from($scope.time.from)
-                      .to($scope.time.to)
-                    )))).size(0)
-            var ret = sub_request.doSearch();
+                    ejs.AndFilter([
+                      ejs.QueryFilter(
+                        ejs.QueryStringQuery($scope.panel.query.query || '*')),
+                      ejs.RangeFilter($scope.time.field)
+                        .from($scope.time.from)
+                        .to($scope.time.to)]))))).size(0)
+            var ret = request.doSearch();
             ret.then(function(ret) {
               var count = ret.facets.pie.total;
-              $scope.hits += count;
+              sum += count;
               var slice = { label : v.term, data : count };
               pushData(slice);
               k = k + 1;
+              if (k === results.facets.pie.terms.length
+                  && $scope.panel.rest && $scope.hits > sum) {
+                var rest = { label: "The rest", data : $scope.hits - sum};
+                pushData(rest);
+              }
               $scope.$emit('render');
             });
           });
@@ -182,16 +220,7 @@ angular.module('kibana.pie', [])
               .cache(false))
             .size(0)
       } else {
-        request =  request
-          .facet(ejs.StatisticalFacet('pie')
-            .field($scope.panel.query.value)
-            .facetFilter(ejs.QueryFilter(
-              ejs.FilteredQuery(
-                ejs.QueryStringQuery($scope.panel.query.query || '*'),
-                ejs.RangeFilter($scope.time.field)
-                  .from($scope.time.from)
-                  .to($scope.time.to)
-                )))).size(0)
+          request = statisticalRequest()
       }
       $scope.populate_modal(request);
 
@@ -229,6 +258,11 @@ angular.module('kibana.pie', [])
     $scope.panel.query.query = add_to_query($scope.panel.query.query,field,value,false)
     $scope.get_data();
     eventBus.broadcast($scope.$id,$scope.panel.group,'query',[$scope.panel.query.query]);
+  }
+
+  $scope.close_edit = function() {
+    $scope.get_data();
+    $scope.$emit('render');
   }
 
   function set_time(time) {
